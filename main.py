@@ -1,5 +1,9 @@
 from fastapi import FastAPI, Request
 import time
+import os
+from PIL import Image
+import numpy as np
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 app = FastAPI()
 
@@ -7,11 +11,58 @@ app = FastAPI()
 async def infer(request: Request):
     start = time.time()
     data = await request.json()
-    frames = data.get("frames", [])
+    image_path = data.get("image_path")
     bboxes = data.get("bboxes", [])
-    # Here you would process frames and bboxes, run the model, etc.
+    # Validate input
+    if not image_path or not os.path.exists(image_path):
+        return {"error": "Image path not found"}
+    if len(bboxes) < 2:
+        return {"error": "At least two bounding boxes required"}
+
+    w, h = Image.open(image_path).size
+    def convert_bbox(bbox, w, h):
+        x1, y1, x2, y2 = bbox
+        bbox_norm = [
+            int(round(x1 / (w-1) * 1000)),
+            int(round(y1 / (h-1) * 1000)),
+            int(round(x2 / (w-1) * 1000)),
+            int(round(y2 / (h-1) * 1000)),
+        ]
+        bbox_norm = [max(0, min(1000, v)) for v in bbox_norm]
+        return f"({bbox_norm[0]}, {bbox_norm[1]}), ({bbox_norm[2]}, {bbox_norm[3]})"
+
+    bbox_str_0 = convert_bbox(bboxes[0], w, h)
+    bbox_str_1 = convert_bbox(bboxes[1], w, h)
+    content = [
+        {"type": "image", "image": image_path},
+        {"type": "text", "text": f"What is the distance between <object>; {bbox_str_0} </object> and <object>; {bbox_str_1} </object>?"}
+    ]
+    messages = [
+        {"role": "user", "content": content}
+    ]
+
+    model_path = "Alibaba-DAMO-Academy/RynnBrain-8B"
+    model = AutoModelForImageTextToText.from_pretrained(model_path, dtype="auto", device_map="auto")
+    processor = AutoProcessor.from_pretrained(model_path)
+
+    inputs = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        return_tensors="pt"
+    )
+    inputs = inputs.to(model.device)
+
+    generated_ids = model.generate(**inputs, max_new_tokens=128)
+    generated_ids_trimmed = [
+        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+    ]
+    output_text = processor.batch_decode(
+        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+    )[0]
     latency = time.time() - start
-    return {"frames_received": len(frames), "bboxes_received": bboxes, "latency": latency}
+    return {"distance": output_text, "latency": latency}
 
 import matplotlib.pyplot as plt
 from PIL import Image
