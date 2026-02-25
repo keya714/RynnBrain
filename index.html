@@ -142,7 +142,7 @@
         formData.append('image', uploadedFile);
         // Only send the two bboxes drawn
         formData.append('bboxes', JSON.stringify(bboxes.map(b => [b.x1, b.y1, b.x2, b.y2])));
-        fetch('https://bij0kaegorbj26-8501.proxy.runpod.net/api/infer', {
+        fetch('https://ay31j3vw8jhy14-8501.proxy.runpod.net/api/infer', {
             method: 'POST',
             body: formData
         })
