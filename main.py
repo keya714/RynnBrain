@@ -1,3 +1,18 @@
+from fastapi import FastAPI, Request
+import time
+
+app = FastAPI()
+
+@app.post("/api/infer")
+async def infer(request: Request):
+    start = time.time()
+    data = await request.json()
+    frames = data.get("frames", [])
+    bboxes = data.get("bboxes", [])
+    # Here you would process frames and bboxes, run the model, etc.
+    latency = time.time() - start
+    return {"frames_received": len(frames), "bboxes_received": bboxes, "latency": latency}
+
 import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
