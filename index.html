@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bounding Box Video Tool</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #frames { display: flex; flex-wrap: wrap; gap: 10px; }
+        .frame-container { position: relative; display: inline-block; }
+        .frame-img { max-width: 200px; max-height: 120px; border: 1px solid #ccc; }
+        .bbox { position: absolute; border: 2px solid red; pointer-events: none; }
+        .bbox.selected { border-color: blue; }
+        #output { margin-top: 20px; }
+        #upload { margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <h2>Bounding Box Video Tool</h2>
+    <input type="file" id="upload" accept="video/*">
+    <div id="frames"></div>
+    <button id="sendBtn" disabled>Send to Model</button>
+    <div id="output"></div>
+
+    <script>
+    // ...existing code...
+    </script>
+</body>
+</html>
