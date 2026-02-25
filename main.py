@@ -38,6 +38,9 @@ async def infer(
         os.remove(tmp_path)
         return {"error": "At least two bounding boxes required"}
 
+    # Simulate multiple frames for demonstration (replace with actual frame extraction in production)
+    # For now, use the same image as multiple frames
+    num_frames = len(bboxes_list)
     w, h = Image.open(tmp_path).size
     def convert_bbox(bbox, w, h):
         x1, y1, x2, y2 = bbox
@@ -50,12 +53,23 @@ async def infer(
         bbox_norm = [max(0, min(1000, v)) for v in bbox_norm]
         return f"({bbox_norm[0]}, {bbox_norm[1]}), ({bbox_norm[2]}, {bbox_norm[3]})"
 
-    bbox_str_0 = convert_bbox(bboxes_list[0], w, h)
-    bbox_str_1 = convert_bbox(bboxes_list[1], w, h)
-    content = [
-        {"type": "image", "image": tmp_path},
-        {"type": "text", "text": f"What is the distance between <object>; {bbox_str_0} </object> and <object>; {bbox_str_1} </object>?"}
-    ]
+    content = []
+    for idx in range(num_frames):
+        # Add frame index text
+        content.append({"type": "text", "text": f"<frame {idx}>: "})
+        # Add image (simulate with tmp_path, replace with actual frame path)
+        content.append({"type": "image", "image": tmp_path})
+
+    # Prepare bbox strings for each object
+    bbox_strs = []
+    for i, bbox in enumerate(bboxes_list):
+        bbox_str = convert_bbox(bbox, w, h)
+        bbox_strs.append(f"<object> <frame{i}>; {bbox_str} </object>")
+
+    # Compose the question
+    question = f"What is the distance between {bbox_strs[0]} and {bbox_strs[1]}?"
+    content.append({"type": "text", "text": question})
+
     messages = [
         {"role": "user", "content": content}
     ]
