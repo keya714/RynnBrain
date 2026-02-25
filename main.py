@@ -1,11 +1,19 @@
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 import time
 import os
 from PIL import Image
 import numpy as np
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
-app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"] ,
+    allow_headers=["*"]
+)
 
 @app.post("/api/infer")
 async def infer(request: Request):
