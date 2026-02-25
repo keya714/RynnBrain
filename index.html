@@ -23,7 +23,127 @@
     <div id="output"></div>
 
     <script>
-    // ...existing code...
+    let videoFrames = [];
+    let bboxes = [];
+    let selectedFrameIdx = null;
+    let drawing = false;
+    let startX, startY, endX, endY;
+    let currentFrameContainer = null;
+
+    document.getElementById('upload').addEventListener('change', async function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        // Extract frames using browser APIs
+        const video = document.createElement('video');
+        video.src = URL.createObjectURL(file);
+        video.muted = true;
+        await video.play();
+        video.pause();
+        const duration = video.duration;
+        const numFrames = 8; // Sample 8 frames
+        videoFrames = [];
+        for (let i = 0; i < numFrames; i++) {
+            const time = (duration * i) / numFrames;
+            video.currentTime = time;
+            await new Promise(r => video.onseeked = r);
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0);
+            videoFrames.push(canvas.toDataURL());
+        }
+        renderFrames();
+    });
+
+    function renderFrames() {
+        const framesDiv = document.getElementById('frames');
+        framesDiv.innerHTML = '';
+        bboxes = [];
+        videoFrames.forEach((src, idx) => {
+            const container = document.createElement('div');
+            container.className = 'frame-container';
+            container.dataset.idx = idx;
+            const img = document.createElement('img');
+            img.src = src;
+            img.className = 'frame-img';
+            img.addEventListener('mousedown', e => startDraw(e, container, idx));
+            container.appendChild(img);
+            framesDiv.appendChild(container);
+        });
+    }
+
+    function startDraw(e, container, idx) {
+        drawing = true;
+        selectedFrameIdx = idx;
+        currentFrameContainer = container;
+        const rect = container.getBoundingClientRect();
+        startX = e.clientX - rect.left;
+        startY = e.clientY - rect.top;
+        endX = startX;
+        endY = startY;
+        const bboxDiv = document.createElement('div');
+        bboxDiv.className = 'bbox';
+        bboxDiv.style.left = startX + 'px';
+        bboxDiv.style.top = startY + 'px';
+        bboxDiv.style.width = '0px';
+        bboxDiv.style.height = '0px';
+        container.appendChild(bboxDiv);
+        container.onmousemove = evt => drawMove(evt, bboxDiv, container);
+        container.onmouseup = evt => endDraw(evt, bboxDiv, container, idx);
+    }
+
+    function drawMove(e, bboxDiv, container) {
+        if (!drawing) return;
+        const rect = container.getBoundingClientRect();
+        endX = e.clientX - rect.left;
+        endY = e.clientY - rect.top;
+        bboxDiv.style.width = Math.abs(endX - startX) + 'px';
+        bboxDiv.style.height = Math.abs(endY - startY) + 'px';
+        bboxDiv.style.left = Math.min(startX, endX) + 'px';
+        bboxDiv.style.top = Math.min(startY, endY) + 'px';
+    }
+
+    function endDraw(e, bboxDiv, container, idx) {
+        drawing = false;
+        container.onmousemove = null;
+        container.onmouseup = null;
+        // Save bbox
+        const bbox = {
+            frameIdx: idx,
+            x1: Math.min(startX, endX),
+            y1: Math.min(startY, endY),
+            x2: Math.max(startX, endX),
+            y2: Math.max(startY, endY)
+        };
+        bboxes.push(bbox);
+        bboxDiv.classList.add('selected');
+        if (bboxes.length === 2) {
+            document.getElementById('sendBtn').disabled = false;
+        }
+    }
+
+    document.getElementById('sendBtn').addEventListener('click', function() {
+        if (bboxes.length !== 2) return;
+        // Prepare payload for backend/model
+        const payload = {
+            frames: videoFrames,
+            bboxes: bboxes
+        };
+        document.getElementById('output').innerText = 'Sending to model...';
+        fetch('http://localhost:8000/api/infer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(res => res.json())
+        .then(data => {
+            document.getElementById('output').innerText = JSON.stringify(data, null, 2);
+        })
+        .catch(err => {
+            document.getElementById('output').innerText = 'Error: ' + err;
+        });
+    });
     </script>
 </body>
 </html>
