@@ -1,11 +1,11 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import time
 import os
 from PIL import Image
 import numpy as np
 from transformers import AutoModelForImageTextToText, AutoProcessor
-
+app=FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,19 +15,30 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+
 @app.post("/api/infer")
-async def infer(request: Request):
+async def infer(
+    image: UploadFile = File(...),
+    bboxes: str = Form(...)
+):
+    import tempfile, json
     start = time.time()
-    data = await request.json()
-    image_path = data.get("image_path")
-    bboxes = data.get("bboxes", [])
-    # Validate input
-    if not image_path or not os.path.exists(image_path):
-        return {"error": "Image path not found"}
-    if len(bboxes) < 2:
+    # Save uploaded image to a temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(image.filename)[-1]) as tmp:
+        tmp.write(await image.read())
+        tmp_path = tmp.name
+
+    # Parse bounding boxes from JSON string
+    try:
+        bboxes_list = json.loads(bboxes)
+    except Exception:
+        os.remove(tmp_path)
+        return {"error": "Invalid bboxes format. Must be JSON list."}
+    if len(bboxes_list) < 2:
+        os.remove(tmp_path)
         return {"error": "At least two bounding boxes required"}
 
-    w, h = Image.open(image_path).size
+    w, h = Image.open(tmp_path).size
     def convert_bbox(bbox, w, h):
         x1, y1, x2, y2 = bbox
         bbox_norm = [
@@ -39,10 +50,10 @@ async def infer(request: Request):
         bbox_norm = [max(0, min(1000, v)) for v in bbox_norm]
         return f"({bbox_norm[0]}, {bbox_norm[1]}), ({bbox_norm[2]}, {bbox_norm[3]})"
 
-    bbox_str_0 = convert_bbox(bboxes[0], w, h)
-    bbox_str_1 = convert_bbox(bboxes[1], w, h)
+    bbox_str_0 = convert_bbox(bboxes_list[0], w, h)
+    bbox_str_1 = convert_bbox(bboxes_list[1], w, h)
     content = [
-        {"type": "image", "image": image_path},
+        {"type": "image", "image": tmp_path},
         {"type": "text", "text": f"What is the distance between <object>; {bbox_str_0} </object> and <object>; {bbox_str_1} </object>?"}
     ]
     messages = [
@@ -70,6 +81,7 @@ async def infer(request: Request):
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
     latency = time.time() - start
+    os.remove(tmp_path)
     return {"distance": output_text, "latency": latency}
 
 import matplotlib.pyplot as plt
