@@ -17,7 +17,7 @@
 </head>
 <body>
     <h2>Bounding Box Video Tool</h2>
-    <input type="file" id="upload" accept="video/*">
+    <input type="file" id="upload" accept="image/*,video/*">
     <div id="frames"></div>
     <button id="sendBtn" disabled>Send to Model</button>
     <div id="output"></div>
@@ -30,30 +30,42 @@
     let startX, startY, endX, endY;
     let currentFrameContainer = null;
 
+    let uploadedFile = null;
     document.getElementById('upload').addEventListener('change', async function(e) {
         const file = e.target.files[0];
         if (!file) return;
-        // Extract frames using browser APIs
-        const video = document.createElement('video');
-        video.src = URL.createObjectURL(file);
-        video.muted = true;
-        await video.play();
-        video.pause();
-        const duration = video.duration;
-        const numFrames = 8; // Sample 8 frames
-        videoFrames = [];
-        for (let i = 0; i < numFrames; i++) {
-            const time = (duration * i) / numFrames;
-            video.currentTime = time;
-            await new Promise(r => video.onseeked = r);
-            const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0);
-            videoFrames.push(canvas.toDataURL());
+        uploadedFile = file;
+        // If image, just show it as a single frame
+        if (file.type.startsWith('image/')) {
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                videoFrames = [evt.target.result];
+                renderFrames();
+            };
+            reader.readAsDataURL(file);
+        } else {
+            // Extract frames using browser APIs for video
+            const video = document.createElement('video');
+            video.src = URL.createObjectURL(file);
+            video.muted = true;
+            await video.play();
+            video.pause();
+            const duration = video.duration;
+            const numFrames = 8; // Sample 8 frames
+            videoFrames = [];
+            for (let i = 0; i < numFrames; i++) {
+                const time = (duration * i) / numFrames;
+                video.currentTime = time;
+                await new Promise(r => video.onseeked = r);
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0);
+                videoFrames.push(canvas.toDataURL());
+            }
+            renderFrames();
         }
-        renderFrames();
     });
 
     function renderFrames() {
@@ -124,17 +136,15 @@
     }
 
     document.getElementById('sendBtn').addEventListener('click', function() {
-        if (bboxes.length !== 2) return;
-        // Prepare payload for backend/model
-        const payload = {
-            frames: videoFrames,
-            bboxes: bboxes
-        };
+        if (bboxes.length !== 2 || !uploadedFile) return;
         document.getElementById('output').innerText = 'Sending to model...';
+        const formData = new FormData();
+        formData.append('image', uploadedFile);
+        // Only send the two bboxes drawn
+        formData.append('bboxes', JSON.stringify(bboxes.map(b => [b.x1, b.y1, b.x2, b.y2])));
         fetch('https://bij0kaegorbj26-8501.proxy.runpod.net/api/infer', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: formData
         })
         .then(res => res.json())
         .then(data => {
