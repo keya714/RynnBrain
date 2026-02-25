@@ -131,7 +131,7 @@
             bboxes: bboxes
         };
         document.getElementById('output').innerText = 'Sending to model...';
-        fetch('http://localhost:8000/api/infer', {
+        fetch('https://bij0kaegorbj26-8501.proxy.runpod.net/api/infer', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
