@@ -2,16 +2,32 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import time
 import os
-from PIL import Image
+import csv
+from PIL import Image, ImageDraw
 import numpy as np
 from transformers import AutoModelForImageTextToText, AutoProcessor
+
+IMAGES_DIR = "images"
+CSV_PATH = "results.csv"
+
+os.makedirs(IMAGES_DIR, exist_ok=True)
+
+if not os.path.exists(CSV_PATH):
+    with open(CSV_PATH, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["video_name", "annotated_images", "response", "latency"])
+
+MODEL_PATH = "Alibaba-DAMO-Academy/RynnBrain-8B"
+model = AutoModelForImageTextToText.from_pretrained(
+    MODEL_PATH, dtype="auto", device_map="auto"
+)
+processor = AutoProcessor.from_pretrained(MODEL_PATH)
+
 app=FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://ay31j3vw8jhy14-8000.proxy.runpod.net",
-        "http://ay31j3vw8jhy14-8000.proxy.runpod.net"
+    allow_origins=["*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -104,14 +120,7 @@ async def infer(
     question = f"What is the distance between {bbox_strs[0]} and {bbox_strs[1]}?"
     content.append({"type": "text", "text": question})
 
-    messages = [
-        {"role": "user", "content": content}
-    ]
-
-    model_path = "Alibaba-DAMO-Academy/RynnBrain-8B"
-    model = AutoModelForImageTextToText.from_pretrained(model_path, dtype="auto", device_map="auto")
-    processor = AutoProcessor.from_pretrained(model_path)
-
+    messages = [{"role": "user", "content": content}]
     inputs = processor.apply_chat_template(
         messages,
         tokenize=True,
@@ -128,6 +137,35 @@ async def infer(
     output_text = processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
+
+    annotated_image_paths = []
+    base_name, _ = os.path.splitext(image.filename)
+    for i, frame_path in enumerate(frame_paths):
+        img = Image.open(frame_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        for bbox in bboxes_list:
+            x1, y1, x2, y2 = bbox
+            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+        annotated_name = f"{base_name}_annotated_{i}.png"
+        annotated_path = os.path.join(IMAGES_DIR, annotated_name)
+        img.save(annotated_path)
+        annotated_image_paths.append(annotated_name)
+
     latency = time.time() - start
+
+    with open(CSV_PATH, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            image.filename,
+            "|".join(annotated_image_paths),
+            output_text,
+            latency
+        ])
+
     os.remove(tmp_path)
-    return {"distance": output_text, "latency": latency}
+    return {
+        "distance": output_text,
+        "latency": latency,
+        "video_name": image.filename,
+        "annotated_images": annotated_image_paths,
+    }
