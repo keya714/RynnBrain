@@ -96,6 +96,23 @@ async def infer(
         return {"error": "Unsupported file type. Please upload an image or video."}
 
     num_frames = len(frame_paths)
+
+    # Create annotated frames that will be sent to the model
+    annotated_frame_paths = []
+    annotated_filenames = []
+    base_name, _ = os.path.splitext(image.filename)
+    for i, frame_path in enumerate(frame_paths):
+        img = Image.open(frame_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        for bbox in bboxes_list:
+            x1, y1, x2, y2 = bbox
+            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+        annotated_name = f"{base_name}_annotated_{i}.png"
+        annotated_path = os.path.join(IMAGES_DIR, annotated_name)
+        img.save(annotated_path)
+        annotated_frame_paths.append(annotated_path)
+        annotated_filenames.append(annotated_name)
+
     def convert_bbox(bbox, w, h):
         x1, y1, x2, y2 = bbox
         bbox_norm = [
@@ -108,7 +125,7 @@ async def infer(
         return f"({bbox_norm[0]}, {bbox_norm[1]}), ({bbox_norm[2]}, {bbox_norm[3]})"
 
     content = []
-    for idx, frame_path in enumerate(frame_paths):
+    for idx, frame_path in enumerate(annotated_frame_paths):
         content.append({"type": "text", "text": f"<frame {idx}>: "})
         content.append({"type": "image", "image": frame_path})
 
@@ -138,26 +155,13 @@ async def infer(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
 
-    annotated_image_paths = []
-    base_name, _ = os.path.splitext(image.filename)
-    for i, frame_path in enumerate(frame_paths):
-        img = Image.open(frame_path).convert("RGB")
-        draw = ImageDraw.Draw(img)
-        for bbox in bboxes_list:
-            x1, y1, x2, y2 = bbox
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-        annotated_name = f"{base_name}_annotated_{i}.png"
-        annotated_path = os.path.join(IMAGES_DIR, annotated_name)
-        img.save(annotated_path)
-        annotated_image_paths.append(annotated_name)
-
     latency = time.time() - start
 
     with open(CSV_PATH, mode="a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
             image.filename,
-            "|".join(annotated_image_paths),
+            "|".join(annotated_filenames),
             output_text,
             latency
         ])
@@ -167,5 +171,5 @@ async def infer(
         "distance": output_text,
         "latency": latency,
         "video_name": image.filename,
-        "annotated_images": annotated_image_paths,
+        "annotated_images": annotated_filenames,
     }

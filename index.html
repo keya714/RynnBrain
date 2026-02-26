@@ -120,13 +120,22 @@
         drawing = false;
         container.onmousemove = null;
         container.onmouseup = null;
-        // Save bbox
+        // Save bbox in ORIGINAL image/video pixel coordinates
+        const img = container.querySelector('img');
+        const scaleX = img.naturalWidth / img.clientWidth;
+        const scaleY = img.naturalHeight / img.clientHeight;
+
+        const dispX1 = Math.min(startX, endX);
+        const dispY1 = Math.min(startY, endY);
+        const dispX2 = Math.max(startX, endX);
+        const dispY2 = Math.max(startY, endY);
+
         const bbox = {
             frameIdx: idx,
-            x1: Math.min(startX, endX),
-            y1: Math.min(startY, endY),
-            x2: Math.max(startX, endX),
-            y2: Math.max(startY, endY)
+            x1: Math.round(dispX1 * scaleX),
+            y1: Math.round(dispY1 * scaleY),
+            x2: Math.round(dispX2 * scaleX),
+            y2: Math.round(dispY2 * scaleY)
         };
         bboxes.push(bbox);
         bboxDiv.classList.add('selected');
