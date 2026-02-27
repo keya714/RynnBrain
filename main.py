@@ -55,9 +55,9 @@ async def infer(
     except Exception:
         os.remove(tmp_path)
         return {"error": "Invalid bboxes format. Must be JSON list."}
-    if len(bboxes_list) < 2:
+    if len(bboxes_list) < 1:
         os.remove(tmp_path)
-        return {"error": "At least two bounding boxes required"}
+        return {"error": "At least one bounding box required."}
 
     # Determine file type by extension (robust for temp files)
     ext = os.path.splitext(image.filename)[-1].lower()
@@ -103,9 +103,10 @@ async def infer(
     base_name, _ = os.path.splitext(image.filename)
     for i, frame_path in enumerate(frame_paths):
         img = Image.open(frame_path).convert("RGB")
-        draw = ImageDraw.Draw(img)
-        for bbox in bboxes_list:
-            x1, y1, x2, y2 = bbox
+        # Highlight the target object only in the first frame
+        if i == 0:
+            draw = ImageDraw.Draw(img)
+            x1, y1, x2, y2 = bboxes_list[0]
             draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
         annotated_name = f"{base_name}_annotated_{i}.png"
         annotated_path = os.path.join(IMAGES_DIR, annotated_name)
@@ -113,28 +114,21 @@ async def infer(
         annotated_frame_paths.append(annotated_path)
         annotated_filenames.append(annotated_name)
 
-    def convert_bbox(bbox, w, h):
-        x1, y1, x2, y2 = bbox
-        bbox_norm = [
-            int(round(x1 / (w-1) * 1000)),
-            int(round(y1 / (h-1) * 1000)),
-            int(round(x2 / (w-1) * 1000)),
-            int(round(y2 / (h-1) * 1000)),
-        ]
-        bbox_norm = [max(0, min(1000, v)) for v in bbox_norm]
-        return f"({bbox_norm[0]}, {bbox_norm[1]}), ({bbox_norm[2]}, {bbox_norm[3]})"
-
     content = []
     for idx, frame_path in enumerate(annotated_frame_paths):
         content.append({"type": "text", "text": f"<frame {idx}>: "})
         content.append({"type": "image", "image": frame_path})
 
-    bbox_strs = []
-    for i, bbox in enumerate(bboxes_list):
-        bbox_str = convert_bbox(bbox, w, h)
-        bbox_strs.append(f"<object> <frame{i}>; {bbox_str} </object>")
-
-    question = f"What is the distance between {bbox_strs[0]} and {bbox_strs[1]}?"
+    question = (
+        "You are an expert visual tracker.\n"
+        f"You are given {num_frames} frames from a video.\n"
+        "In <frame 0>, the target object is highlighted by a red bounding box.\n"
+        "For each frame, output the bounding box of the same object "
+        "as normalized integer coordinates between 0 and 1000 in the following strict JSON format:\n"
+        "[{\"frame\": t, \"bbox\": [x1, y1, x2, y2]}, ...]\n"
+        "where x1, y1, x2, y2 are integers between 0 and 1000.\n"
+        "Respond with JSON only and no additional text."
+    ).format(last_frame=num_frames - 1)
     content.append({"type": "text", "text": question})
 
     messages = [{"role": "user", "content": content}]
@@ -155,6 +149,12 @@ async def infer(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
 
+    # Try to parse the model output as JSON trajectory
+    try:
+        trajectory = json.loads(output_text)
+    except Exception:
+        trajectory = None
+
     latency = time.time() - start
 
     with open(CSV_PATH, mode="a", newline="", encoding="utf-8") as f:
@@ -168,7 +168,8 @@ async def infer(
 
     os.remove(tmp_path)
     return {
-        "distance": output_text,
+        "trajectory_raw": output_text,
+        "trajectory": trajectory,
         "latency": latency,
         "video_name": image.filename,
         "annotated_images": annotated_filenames,

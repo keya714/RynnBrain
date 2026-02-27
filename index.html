@@ -137,21 +137,26 @@
             x2: Math.round(dispX2 * scaleX),
             y2: Math.round(dispY2 * scaleY)
         };
-        bboxes.push(bbox);
+        // Only keep the latest selected object to track
+        bboxes = [bbox];
+
+        // Clear previous visual selections
+        document.querySelectorAll('.bbox.selected').forEach(el => el.classList.remove('selected'));
         bboxDiv.classList.add('selected');
-        if (bboxes.length === 2) {
+
+        if (bboxes.length >= 1) {
             document.getElementById('sendBtn').disabled = false;
         }
     }
 
     document.getElementById('sendBtn').addEventListener('click', function() {
-        if (bboxes.length !== 2 || !uploadedFile) return;
+        if (bboxes.length < 1 || !uploadedFile) return;
         document.getElementById('output').innerText = 'Sending to model...';
         const formData = new FormData();
         formData.append('image', uploadedFile);
-        // Only send the two bboxes drawn
+        // Only send the selected bbox
         formData.append('bboxes', JSON.stringify(bboxes.map(b => [b.x1, b.y1, b.x2, b.y2])));
-        fetch('https://snkbgdpf36tenc-8501.proxy.runpod.net/api/infer', {
+        fetch('http://127.0.0.1:8000/api/infer', {
             method: 'POST',
             body: formData
         })
