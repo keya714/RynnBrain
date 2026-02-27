@@ -21,6 +21,8 @@
     <div id="frames"></div>
     <button id="sendBtn" disabled>Send to Model</button>
     <div id="output"></div>
+    <h3>Trajectory Visualization</h3>
+    <div id="trajectory"></div>
 
     <script>
     let videoFrames = [];
@@ -150,12 +152,12 @@
     }
 
     document.getElementById('sendBtn').addEventListener('click', function() {
-        if (bboxes.length < 1 || !uploadedFile) return;
+        if (!uploadedFile) return;
         document.getElementById('output').innerText = 'Sending to model...';
         const formData = new FormData();
         formData.append('image', uploadedFile);
-        // Only send the selected bbox
-        formData.append('bboxes', JSON.stringify(bboxes.map(b => [b.x1, b.y1, b.x2, b.y2])));
+        // Backend no longer uses bboxes; send empty list
+        formData.append('bboxes', JSON.stringify([]));
         fetch('http://127.0.0.1:8000/api/infer', {
             method: 'POST',
             body: formData
@@ -163,6 +165,18 @@
         .then(res => res.json())
         .then(data => {
             document.getElementById('output').innerText = JSON.stringify(data, null, 2);
+
+            // Show trajectory images if provided
+            const trajDiv = document.getElementById('trajectory');
+            trajDiv.innerHTML = '';
+            if (data.trajectory_images && Array.isArray(data.trajectory_images)) {
+                data.trajectory_images.forEach(name => {
+                    const img = document.createElement('img');
+                    img.src = 'http://127.0.0.1:8000/images/' + name;
+                    img.className = 'frame-img';
+                    trajDiv.appendChild(img);
+                });
+            }
         })
         .catch(err => {
             document.getElementById('output').innerText = 'Error: ' + err;

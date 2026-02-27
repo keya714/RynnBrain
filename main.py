@@ -1,8 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import time
 import os
 import csv
+import re
 from PIL import Image, ImageDraw
 import numpy as np
 from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -23,7 +25,7 @@ model = AutoModelForImageTextToText.from_pretrained(
 )
 processor = AutoProcessor.from_pretrained(MODEL_PATH)
 
-app=FastAPI()
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,11 +36,13 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
+
 
 @app.post("/api/infer")
 async def infer(
     image: UploadFile = File(...),
-    bboxes: str = Form(...)
+    bboxes: str = Form("[]")
 ):
     import tempfile, json
     start = time.time()
@@ -48,16 +52,6 @@ async def infer(
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(image.filename)[-1]) as tmp:
         tmp.write(await image.read())
         tmp_path = tmp.name
-
-    # Parse bounding boxes from JSON string
-    try:
-        bboxes_list = json.loads(bboxes)
-    except Exception:
-        os.remove(tmp_path)
-        return {"error": "Invalid bboxes format. Must be JSON list."}
-    if len(bboxes_list) < 1:
-        os.remove(tmp_path)
-        return {"error": "At least one bounding box required."}
 
     # Determine file type by extension (robust for temp files)
     ext = os.path.splitext(image.filename)[-1].lower()
@@ -97,17 +91,12 @@ async def infer(
 
     num_frames = len(frame_paths)
 
-    # Create annotated frames that will be sent to the model
+    # Create frames that will be sent to the model (no user-provided bbox guidance)
     annotated_frame_paths = []
     annotated_filenames = []
     base_name, _ = os.path.splitext(image.filename)
     for i, frame_path in enumerate(frame_paths):
         img = Image.open(frame_path).convert("RGB")
-        # Highlight the target object only in the first frame
-        if i == 0:
-            draw = ImageDraw.Draw(img)
-            x1, y1, x2, y2 = bboxes_list[0]
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
         annotated_name = f"{base_name}_annotated_{i}.png"
         annotated_path = os.path.join(IMAGES_DIR, annotated_name)
         img.save(annotated_path)
@@ -119,17 +108,18 @@ async def infer(
         content.append({"type": "text", "text": f"<frame {idx}>: "})
         content.append({"type": "image", "image": frame_path})
 
-    question = (
-        "You are an expert visual tracker.\n"
-        f"You are given {num_frames} frames from a video.\n"
-        "In <frame 0>, the target object is highlighted by a red bounding box.\n"
-        "For each frame, output the bounding box of the same object "
-        "as normalized integer coordinates between 0 and 1000 in the following strict JSON format:\n"
-        "[{\"frame\": t, \"bbox\": [x1, y1, x2, y2]}, ...]\n"
-        "where x1, y1, x2, y2 are integers between 0 and 1000.\n"
-        "Respond with JSON only and no additional text."
-    ).format(last_frame=num_frames - 1)
-    content.append({"type": "text", "text": question})
+    instruction = (
+        "You are an expert trajectory analyst. "
+        "You are given several frames from a video containing a tank. "
+        "Your task is to predict the movement trajectory of the tank."
+    )
+    format_prompt = (
+        "First predict the frame containing the trajectory start point, "
+        "then output up to 10 key trajectory points as a list of tuples in the format: "
+        ": ...; (x1, y1), (x2, y2), ....  "
+        "All coordinates must be normalized between 0 and 1000."
+    )
+    content.append({"type": "text", "text": f"{instruction}\n{format_prompt}"})
 
     messages = [{"role": "user", "content": content}]
     inputs = processor.apply_chat_template(
@@ -149,11 +139,42 @@ async def infer(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
 
-    # Try to parse the model output as JSON trajectory
-    try:
-        trajectory = json.loads(output_text)
-    except Exception:
-        trajectory = None
+    # Parse trajectory points from the model's textual output, e.g.:
+    # "The start trajectory is at ; (498, 487), (536, 491), ..."
+    trajectory_points_norm = []
+    for match in re.finditer(r"\((\d+)\s*,\s*(\d+)\)", output_text):
+        x = int(match.group(1))
+        y = int(match.group(2))
+        trajectory_points_norm.append([x, y])
+
+    trajectory_points_pixel = []
+    if trajectory_points_norm:
+        for x_norm, y_norm in trajectory_points_norm:
+            x_px = int(round(x_norm / 1000 * (w - 1)))
+            y_px = int(round(y_norm / 1000 * (h - 1)))
+            trajectory_points_pixel.append([x_px, y_px])
+
+    # Draw trajectory on all frames and save as new images
+    trajectory_image_filenames = []
+    if trajectory_points_pixel:
+        for i, frame_path in enumerate(annotated_frame_paths):
+            img = Image.open(frame_path).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            # Draw polyline for trajectory
+            if len(trajectory_points_pixel) >= 2:
+                draw.line(trajectory_points_pixel, fill="red", width=3)
+            # Draw small circles at each key point
+            r = 5
+            for x_px, y_px in trajectory_points_pixel:
+                draw.ellipse(
+                    [x_px - r, y_px - r, x_px + r, y_px + r],
+                    outline="yellow",
+                    width=2,
+                )
+            traj_name = f"{base_name}_traj_{i}.png"
+            traj_path = os.path.join(IMAGES_DIR, traj_name)
+            img.save(traj_path)
+            trajectory_image_filenames.append(traj_name)
 
     latency = time.time() - start
 
@@ -169,7 +190,9 @@ async def infer(
     os.remove(tmp_path)
     return {
         "trajectory_raw": output_text,
-        "trajectory": trajectory,
+        "trajectory_points_norm": trajectory_points_norm,
+        "trajectory_points_pixel": trajectory_points_pixel,
+        "trajectory_images": trajectory_image_filenames,
         "latency": latency,
         "video_name": image.filename,
         "annotated_images": annotated_filenames,
