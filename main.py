@@ -109,15 +109,24 @@ async def infer(
         content.append({"type": "image", "image": frame_path})
 
     instruction = (
-        "You are an expert trajectory analyst. "
-        "You are given several frames from a video containing a tank. "
-        "Your task is to predict the movement trajectory of the tank."
+        "You are an expert traffic collision analyst.\n"
+        f"You are given {num_frames} frames from a video of an intersection, labeled <frame 0> .. <frame {num_frames-1}>.\n"
+        "Identify the WHITE car (target).\n"
+        "Then decide which car hits the white car first: RED or BLACK.\n"
+        "If neither hits the white car within the provided frames, answer \"none\"."
     )
     format_prompt = (
-        "First predict the frame containing the trajectory start point, "
-        "then output up to 10 key trajectory points as a list of tuples in the format: "
-        ": ...; (x1, y1), (x2, y2), ....  "
-        "All coordinates must be normalized between 0 and 1000."
+        "Respond with JSON ONLY (no extra text). Use this schema:\n"
+        "{\n"
+        "  \"first_hitter\": \"red\" | \"black\" | \"none\",\n"
+        "  \"target_start\": {\"frame\": int, \"pt\": [x, y]},\n"
+        "  \"red_start\": {\"frame\": int, \"pt\": [x, y]},\n"
+        "  \"black_start\": {\"frame\": int, \"pt\": [x, y]},\n"
+        "  \"impact\": {\"frame\": int, \"pt\": [x, y]} | null,\n"
+        "  \"confidence\": \"low\" | \"medium\" | \"high\"\n"
+        "}\n"
+        "All coordinates must be normalized integers between 0 and 1000.\n"
+        "Frame indices must refer to the provided frames."
     )
     content.append({"type": "text", "text": f"{instruction}\n{format_prompt}"})
 
@@ -139,37 +148,75 @@ async def infer(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
 
-    # Parse trajectory points from the model's textual output, e.g.:
-    # "The start trajectory is at ; (498, 487), (536, 491), ..."
-    trajectory_points_norm = []
-    for match in re.finditer(r"\((\d+)\s*,\s*(\d+)\)", output_text):
-        x = int(match.group(1))
-        y = int(match.group(2))
-        trajectory_points_norm.append([x, y])
+    # Parse collision analysis JSON if possible (preferred), otherwise fall back to tuple parsing.
+    analysis = None
+    try:
+        analysis = json.loads(output_text)
+    except Exception:
+        analysis = None
 
-    trajectory_points_pixel = []
-    if trajectory_points_norm:
-        for x_norm, y_norm in trajectory_points_norm:
-            x_px = int(round(x_norm / 1000 * (w - 1)))
-            y_px = int(round(y_norm / 1000 * (h - 1)))
-            trajectory_points_pixel.append([x_px, y_px])
+    points_norm_named = {}
+    if isinstance(analysis, dict):
+        def _get_pt(obj):
+            if not isinstance(obj, dict):
+                return None
+            pt = obj.get("pt")
+            if (
+                isinstance(pt, list)
+                and len(pt) == 2
+                and all(isinstance(v, int) for v in pt)
+            ):
+                return (pt[0], pt[1])
+            return None
 
-    # Draw trajectory on all frames and save as new images
+        points_norm_named["target"] = _get_pt(analysis.get("target_start"))
+        points_norm_named["red"] = _get_pt(analysis.get("red_start"))
+        points_norm_named["black"] = _get_pt(analysis.get("black_start"))
+        if analysis.get("impact") is None:
+            points_norm_named["impact"] = None
+        else:
+            points_norm_named["impact"] = _get_pt(analysis.get("impact"))
+
+    # Fallback: extract tuples and treat them as generic points
+    if not any(v is not None for v in points_norm_named.values()):
+        tuples = []
+        for match in re.finditer(r"\((\d+)\s*,\s*(\d+)\)", output_text):
+            tuples.append((int(match.group(1)), int(match.group(2))))
+        if tuples:
+            points_norm_named["target"] = tuples[0]
+            points_norm_named["impact"] = tuples[-1]
+
+    def norm_to_px(pt):
+        if pt is None:
+            return None
+        x_norm, y_norm = pt
+        x_px = int(round(x_norm / 1000 * (w - 1)))
+        y_px = int(round(y_norm / 1000 * (h - 1)))
+        return (x_px, y_px)
+
+    points_px_named = {k: norm_to_px(v) for k, v in points_norm_named.items()}
+
+    # Draw named points on all frames and save as new images
     trajectory_image_filenames = []
-    if trajectory_points_pixel:
+    if any(v is not None for v in points_px_named.values()):
+        colors = {
+            "target": "white",
+            "red": "red",
+            "black": "black",
+            "impact": "yellow",
+        }
         for i, frame_path in enumerate(annotated_frame_paths):
             img = Image.open(frame_path).convert("RGB")
             draw = ImageDraw.Draw(img)
-            # Draw polyline for trajectory
-            if len(trajectory_points_pixel) >= 2:
-                draw.line(trajectory_points_pixel, fill="red", width=3)
-            # Draw small circles at each key point
-            r = 5
-            for x_px, y_px in trajectory_points_pixel:
+            for name, pt_px in points_px_named.items():
+                if pt_px is None:
+                    continue
+                x_px, y_px = pt_px
+                r = 7 if name == "impact" else 5
                 draw.ellipse(
                     [x_px - r, y_px - r, x_px + r, y_px + r],
-                    outline="yellow",
-                    width=2,
+                    outline=colors.get(name, "yellow"),
+                    width=3,
                 )
             traj_name = f"{base_name}_traj_{i}.png"
             traj_path = os.path.join(IMAGES_DIR, traj_name)
@@ -190,8 +237,9 @@ async def infer(
     os.remove(tmp_path)
     return {
         "trajectory_raw": output_text,
-        "trajectory_points_norm": trajectory_points_norm,
-        "trajectory_points_pixel": trajectory_points_pixel,
+        "analysis": analysis,
+        "points_norm": points_norm_named,
+        "points_pixel": points_px_named,
         "trajectory_images": trajectory_image_filenames,
         "latency": latency,
         "video_name": image.filename,
