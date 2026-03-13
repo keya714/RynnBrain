@@ -1,11 +1,9 @@
-import os
-import shlex
-import subprocess
-import sys
 import time
 import csv
 from datetime import datetime
 from pathlib import Path
+
+from llama_cpp import Llama
 
 
 CSV_PATH = Path(__file__).with_name("qwen_runs.csv")
@@ -13,8 +11,6 @@ CSV_PATH = Path(__file__).with_name("qwen_runs.csv")
 # Configure these before running the script.
 PROMPT = "Replace this string with your prompt."
 MODEL_PATH = Path(r"path\to\your\Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf")
-LLAMA_CLI = "llama-cli"
-MMPROJ_PATH = None  # Optional: Path to mmproj GGUF for vision, or None.
 CTX = 131072
 TEMPERATURE = 0.6
 TOP_P = 0.95
@@ -22,39 +18,25 @@ TOP_K = 20
 N_PREDICT = 512
 N_GPU_LAYERS = None  # e.g. 99, or None to let llama.cpp decide.
 
-
-def _resolve_exe(exe: str) -> str:
-    # Prefer explicit path, otherwise rely on PATH.
-    p = Path(exe)
-    if p.exists():
-        return str(p)
-    if os.name == "nt" and not exe.lower().endswith(".exe"):
-        p2 = Path(exe + ".exe")
-        if p2.exists():
-            return str(p2)
-    return exe
+_LLM: Llama | None = None
 
 
-def _build_cmd(prompt: str) -> list[str]:
-    cmd: list[str] = [_resolve_exe(LLAMA_CLI)]
+def _get_llm() -> Llama:
+    global _LLM
+    if _LLM is not None:
+        return _LLM
 
-    cmd += ["-m", str(MODEL_PATH)]
-    cmd += ["--jinja"]
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
 
-    cmd += ["-c", str(CTX)]
-    cmd += ["--temp", str(TEMPERATURE)]
-    cmd += ["--top-p", str(TOP_P)]
-    cmd += ["--top-k", str(TOP_K)]
-    cmd += ["-n", str(N_PREDICT)]
-
-    if N_GPU_LAYERS is not None:
-        cmd += ["-ngl", str(N_GPU_LAYERS)]
-
-    if MMPROJ_PATH:
-        cmd += ["--mmproj", str(MMPROJ_PATH)]
-
-    cmd += ["-p", prompt]
-    return cmd
+    _LLM = Llama(
+        model_path=str(MODEL_PATH),
+        n_ctx=CTX,
+        n_gpu_layers=N_GPU_LAYERS or 0,
+        logits_all=False,
+        embedding=False,
+    )
+    return _LLM
 
 
 def run_qwen(prompt: str | None = None) -> tuple[str, float]:
@@ -64,48 +46,39 @@ def run_qwen(prompt: str | None = None) -> tuple[str, float]:
     if not prompt:
         raise ValueError("PROMPT is empty. Set PROMPT at the top of run_qwen35_gguf.py or pass a prompt.")
 
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
+    llm = _get_llm()
 
-    if MMPROJ_PATH is not None and not Path(MMPROJ_PATH).exists():
-        raise FileNotFoundError(f"mmproj file not found: {MMPROJ_PATH}")
+    start = time.time()
+    result = llm(
+        prompt,
+        max_tokens=N_PREDICT,
+        temperature=TEMPERATURE,
+        top_p=TOP_P,
+        top_k=TOP_K,
+    )
+    latency = time.time() - start
 
-    cmd = _build_cmd(prompt)
+    # llama-cpp-python returns either "choices"[0]["text"] or "choices"[0]["message"]["content"]
+    choice = result["choices"][0]
+    output_text = choice.get("text") or choice.get("message", {}).get("content", "")
+    output_text = (output_text or "").strip()
 
-    printable = " ".join(shlex.quote(c) for c in cmd)
-    print(f"[run] {printable}", file=sys.stderr)
-
-    try:
-        start = time.time()
-        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        latency = time.time() - start
-
-        output_text = proc.stdout.strip()
-
-        CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        new_file = not CSV_PATH.exists()
-        with CSV_PATH.open("a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            if new_file:
-                writer.writerow(["timestamp", "prompt", "output_text", "latency_seconds"])
-            writer.writerow(
-                [
-                    datetime.now().isoformat(timespec="seconds"),
-                    prompt,
-                    output_text,
-                    f"{latency:.3f}",
-                ]
-            )
-
-        return output_text, latency
-    except FileNotFoundError:
-        raise FileNotFoundError(
-            "llama-cli not found. Build/install llama.cpp and set LLAMA_CLI to its path."
+    CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not CSV_PATH.exists()
+    with CSV_PATH.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if new_file:
+            writer.writerow(["timestamp", "prompt", "output_text", "latency_seconds"])
+        writer.writerow(
+            [
+                datetime.now().isoformat(timespec="seconds"),
+                prompt,
+                output_text,
+                f"{latency:.3f}",
+            ]
         )
-    except subprocess.CalledProcessError as e:
-        msg = "llama-cli exited with non-zero status."
-        detail = e.stderr or e.stdout or ""
-        raise RuntimeError(f"{msg}\n{detail}") from e
+
+    return output_text, latency
 
 
 def main() -> int:
