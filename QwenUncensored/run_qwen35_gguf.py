@@ -57,19 +57,18 @@ def _build_cmd(prompt: str) -> list[str]:
     return cmd
 
 
-def main() -> int:
-    prompt = PROMPT.strip()
+def run_qwen(prompt: str | None = None) -> tuple[str, float]:
+    """Run the Qwen model for the given prompt and return (output_text, latency_seconds)."""
+    if prompt is None:
+        prompt = PROMPT.strip()
     if not prompt:
-        print("Error: PROMPT is empty. Set PROMPT at the top of run_qwen35_gguf.py.", file=sys.stderr)
-        return 2
+        raise ValueError("PROMPT is empty. Set PROMPT at the top of run_qwen35_gguf.py or pass a prompt.")
 
     if not MODEL_PATH.exists():
-        print(f"Error: model file not found: {MODEL_PATH}", file=sys.stderr)
-        return 2
+        raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
 
     if MMPROJ_PATH is not None and not Path(MMPROJ_PATH).exists():
-        print(f"Error: mmproj file not found: {MMPROJ_PATH}", file=sys.stderr)
-        return 2
+        raise FileNotFoundError(f"mmproj file not found: {MMPROJ_PATH}")
 
     cmd = _build_cmd(prompt)
 
@@ -98,21 +97,26 @@ def main() -> int:
                 ]
             )
 
-        print(output_text)
-        return 0
+        return output_text, latency
     except FileNotFoundError:
-        print(
-            "Error: llama-cli not found. Build/install llama.cpp and pass --llama-cli path to llama-cli(.exe).",
-            file=sys.stderr,
+        raise FileNotFoundError(
+            "llama-cli not found. Build/install llama.cpp and set LLAMA_CLI to its path."
         )
-        return 127
     except subprocess.CalledProcessError as e:
-        print("Error: llama-cli exited with non-zero status.", file=sys.stderr)
-        if e.stdout:
-            print(e.stdout, file=sys.stderr)
-        if e.stderr:
-            print(e.stderr, file=sys.stderr)
-        return e.returncode
+        msg = "llama-cli exited with non-zero status."
+        detail = e.stderr or e.stdout or ""
+        raise RuntimeError(f"{msg}\n{detail}") from e
+
+
+def main() -> int:
+    try:
+        output_text, latency = run_qwen()
+        print(output_text)
+        print(f"\n[latency] {latency:.3f} seconds", file=sys.stderr)
+        return 0
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

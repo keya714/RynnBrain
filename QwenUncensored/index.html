@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Qwen3.5-35B Prompt Runner</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #0f172a;
+            color: #e5e7eb;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 960px;
+            width: 100%;
+            padding: 24px;
+        }
+        h1 {
+            font-size: 1.75rem;
+            margin-bottom: 0.5rem;
+        }
+        p {
+            margin-top: 0;
+            margin-bottom: 1rem;
+            color: #9ca3af;
+        }
+        textarea {
+            width: 100%;
+            min-height: 140px;
+            resize: vertical;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #1f2937;
+            background: #020617;
+            color: #e5e7eb;
+            font-family: inherit;
+            font-size: 0.95rem;
+            box-sizing: border-box;
+        }
+        textarea:focus {
+            outline: 2px solid #06b6d4;
+            outline-offset: 2px;
+        }
+        button {
+            margin-top: 12px;
+            padding: 10px 18px;
+            border-radius: 999px;
+            border: none;
+            background: linear-gradient(135deg, #0ea5e9, #22c55e);
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 8px;
+            font-size: 0.85rem;
+            color: #9ca3af;
+        }
+        .card {
+            margin-top: 16px;
+            padding: 16px;
+            border-radius: 12px;
+            background: #020617;
+            border: 1px solid #1f2937;
+        }
+        .card h2 {
+            font-size: 1.1rem;
+            margin: 0 0 8px 0;
+        }
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.9rem;
+            margin: 0;
+        }
+        .meta {
+            margin-top: 8px;
+            font-size: 0.85rem;
+            color: #9ca3af;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Qwen3.5-35B Prompt Runner</h1>
+    <p>Enter a prompt and send it to the backend running on <code>http://127.0.0.1:8501</code>. The response and latency will appear below.</p>
+
+    <textarea id="prompt" placeholder="Type your prompt here..."></textarea>
+    <button id="sendBtn">
+        <span id="btnLabel">Send to Model</span>
+    </button>
+    <div class="status" id="status"></div>
+
+    <div class="card">
+        <h2>Output</h2>
+        <pre id="output"></pre>
+        <div class="meta" id="meta"></div>
+    </div>
+</div>
+
+<script>
+    const promptEl = document.getElementById('prompt');
+    const sendBtn = document.getElementById('sendBtn');
+    const btnLabel = document.getElementById('btnLabel');
+    const statusEl = document.getElementById('status');
+    const outputEl = document.getElementById('output');
+    const metaEl = document.getElementById('meta');
+
+    async function sendPrompt() {
+        const prompt = promptEl.value.trim();
+        if (!prompt) {
+            statusEl.textContent = 'Please enter a prompt first.';
+            return;
+        }
+
+        sendBtn.disabled = true;
+        btnLabel.textContent = 'Running...';
+        statusEl.textContent = 'Sending request to backend...';
+        outputEl.textContent = '';
+        metaEl.textContent = '';
+
+        const startedAt = new Date();
+
+        try {
+            const res = await fetch('http://127.0.0.1:8501/api/generate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ prompt })
+            });
+
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(`HTTP ${res.status}: ${text}`);
+            }
+
+            const data = await res.json();
+            outputEl.textContent = data.output || '';
+
+            const latency = typeof data.latency_seconds === 'number'
+                ? data.latency_seconds.toFixed(3)
+                : 'n/a';
+
+            const finishedAt = new Date();
+            metaEl.textContent = `Latency (backend): ${latency}s · Request started at: ${startedAt.toLocaleTimeString()} · Finished at: ${finishedAt.toLocaleTimeString()}`;
+
+            statusEl.textContent = 'Done.';
+        } catch (err) {
+            statusEl.textContent = 'Error calling backend. Check console.';
+            console.error(err);
+            outputEl.textContent = String(err);
+        } finally {
+            sendBtn.disabled = false;
+            btnLabel.textContent = 'Send to Model';
+        }
+    }
+
+    sendBtn.addEventListener('click', sendPrompt);
+    promptEl.addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.key === 'Enter') {
+            sendPrompt();
+        }
+    });
+</script>
+</body>
+</html>
+
