@@ -1,2 +1,5 @@
 # Archives
 *.zip
+
+# Local image datasets / exports
+images/
