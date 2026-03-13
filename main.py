@@ -103,30 +103,53 @@ async def infer(
         annotated_frame_paths.append(annotated_path)
         annotated_filenames.append(annotated_name)
 
+    # Parse selected bounding box from frontend (target vehicle)
+    try:
+        bbox_list = json.loads(bboxes) if bboxes else []
+    except Exception:
+        bbox_list = []
+    selected_bbox = bbox_list[0] if bbox_list else None
+
     content = []
     for idx, frame_path in enumerate(annotated_frame_paths):
         content.append({"type": "text", "text": f"<frame {idx}>: "})
         content.append({"type": "image", "image": frame_path})
 
+    if selected_bbox:
+        frame_idx = selected_bbox.get("frameIdx", 0)
+        x1 = selected_bbox.get("x1", 0)
+        y1 = selected_bbox.get("y1", 0)
+        x2 = selected_bbox.get("x2", 0)
+        y2 = selected_bbox.get("y2", 0)
+        bbox_desc = (
+            f"The TARGET vehicle (the one that was hit) is the car inside the selected bounding box. "
+            f"The bounding box is on <frame {frame_idx}> with pixel coordinates: "
+            f"left={x1}, top={y1}, right={x2}, bottom={y2}. "
+            f"Image dimensions are width={w}, height={h}.\n\n"
+        )
+    else:
+        bbox_desc = (
+            "No bounding box was selected. Identify the vehicle that appears to be the main collision target "
+            "(e.g. the one that is hit by others), then list all vehicles that hit it.\n\n"
+        )
+
     instruction = (
         "You are an expert traffic collision analyst.\n"
-        f"You are given {num_frames} frames from a video of an intersection, labeled <frame 0> .. <frame {num_frames-1}>.\n"
-        "Identify the WHITE car (target).\n"
-        "Then decide which car hits the white car first: RED or BLACK.\n"
-        "If neither hits the white car within the provided frames, answer \"none\"."
+        f"You are given {num_frames} frames from a video of an intersection, labeled <frame 0> .. <frame {num_frames-1}>.\n\n"
+        f"{bbox_desc}"
+        "Identify ALL vehicles that collide with (hit) the target vehicle in the provided frames. "
+        "List the COLOR of each hitting vehicle in the ORDER they hit the target: first vehicle to hit first in the list, then second, etc. "
+        "If no vehicle hits the target within the provided frames, return an empty list."
     )
     format_prompt = (
         "Respond with JSON ONLY (no extra text). Use this schema:\n"
         "{\n"
-        "  \"first_hitter\": \"red\" | \"black\" | \"none\",\n"
-        "  \"target_start\": {\"frame\": int, \"pt\": [x, y]},\n"
-        "  \"red_start\": {\"frame\": int, \"pt\": [x, y]},\n"
-        "  \"black_start\": {\"frame\": int, \"pt\": [x, y]},\n"
-        "  \"impact\": {\"frame\": int, \"pt\": [x, y]} | null,\n"
+        "  \"hitters\": [\"color1\", \"color2\", ...],\n"
         "  \"confidence\": \"low\" | \"medium\" | \"high\"\n"
         "}\n"
-        "All coordinates must be normalized integers between 0 and 1000.\n"
-        "Frame indices must refer to the provided frames."
+        "The \"hitters\" array must list the color of each car that hits the target, in chronological order (first impact first). "
+        "Use lowercase color names (e.g. \"red\", \"black\", \"white\", \"blue\"). "
+        "If no car hits the target, use \"hitters\": []."
     )
     content.append({"type": "text", "text": f"{instruction}\n{format_prompt}"})
 
@@ -169,13 +192,19 @@ async def infer(
                 return (pt[0], pt[1])
             return None
 
-        points_norm_named["target"] = _get_pt(analysis.get("target_start"))
-        points_norm_named["red"] = _get_pt(analysis.get("red_start"))
-        points_norm_named["black"] = _get_pt(analysis.get("black_start"))
-        if analysis.get("impact") is None:
+        # New schema: hitters list only (no spatial points)
+        if "hitters" in analysis:
+            points_norm_named["target"] = None
             points_norm_named["impact"] = None
         else:
-            points_norm_named["impact"] = _get_pt(analysis.get("impact"))
+            # Legacy schema with target_start, red_start, black_start, impact
+            points_norm_named["target"] = _get_pt(analysis.get("target_start"))
+            points_norm_named["red"] = _get_pt(analysis.get("red_start"))
+            points_norm_named["black"] = _get_pt(analysis.get("black_start"))
+            if analysis.get("impact") is None:
+                points_norm_named["impact"] = None
+            else:
+                points_norm_named["impact"] = _get_pt(analysis.get("impact"))
 
     # Fallback: extract tuples and treat them as generic points
     if not any(v is not None for v in points_norm_named.values()):
