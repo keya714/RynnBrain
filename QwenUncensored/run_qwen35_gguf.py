@@ -1,9 +1,26 @@
-import argparse
 import os
 import shlex
 import subprocess
 import sys
+import time
+import csv
+from datetime import datetime
 from pathlib import Path
+
+
+CSV_PATH = Path(__file__).with_name("qwen_runs.csv")
+
+# Configure these before running the script.
+PROMPT = "Replace this string with your prompt."
+MODEL_PATH = Path(r"path\to\your\Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf")
+LLAMA_CLI = "llama-cli"
+MMPROJ_PATH = None  # Optional: Path to mmproj GGUF for vision, or None.
+CTX = 131072
+TEMPERATURE = 0.6
+TOP_P = 0.95
+TOP_K = 20
+N_PREDICT = 512
+N_GPU_LAYERS = None  # e.g. 99, or None to let llama.cpp decide.
 
 
 def _resolve_exe(exe: str) -> str:
@@ -18,113 +35,84 @@ def _resolve_exe(exe: str) -> str:
     return exe
 
 
-def _read_prompt_from_stdin() -> str:
-    data = sys.stdin.read()
-    return data.strip("\r\n")
+def _build_cmd(prompt: str) -> list[str]:
+    cmd: list[str] = [_resolve_exe(LLAMA_CLI)]
 
-
-def _build_cmd(args: argparse.Namespace) -> list[str]:
-    cmd: list[str] = [_resolve_exe(args.llama_cli)]
-
-    cmd += ["-m", args.model]
+    cmd += ["-m", str(MODEL_PATH)]
     cmd += ["--jinja"]
 
-    # Context and generation knobs (match HF card recommendations reasonably).
-    cmd += ["-c", str(args.ctx)]
-    cmd += ["--temp", str(args.temperature)]
-    cmd += ["--top-p", str(args.top_p)]
-    cmd += ["--top-k", str(args.top_k)]
+    cmd += ["-c", str(CTX)]
+    cmd += ["--temp", str(TEMPERATURE)]
+    cmd += ["--top-p", str(TOP_P)]
+    cmd += ["--top-k", str(TOP_K)]
+    cmd += ["-n", str(N_PREDICT)]
 
-    if args.n_predict is not None:
-        cmd += ["-n", str(args.n_predict)]
+    if N_GPU_LAYERS is not None:
+        cmd += ["-ngl", str(N_GPU_LAYERS)]
 
-    if args.n_gpu_layers is not None:
-        cmd += ["-ngl", str(args.n_gpu_layers)]
+    if MMPROJ_PATH:
+        cmd += ["--mmproj", str(MMPROJ_PATH)]
 
-    if args.mmproj:
-        cmd += ["--mmproj", args.mmproj]
-
-    # Chat-ish formatting: this is the simplest cross-template approach for llama.cpp.
-    cmd += ["-p", args.prompt]
+    cmd += ["-p", prompt]
     return cmd
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run a local GGUF of HauhauCS/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive via llama.cpp (llama-cli)."
-        )
-    )
-    parser.add_argument(
-        "--model",
-        required=True,
-        help="Path to the downloaded GGUF model file (e.g. ...Q4_K_M.gguf).",
-    )
-    parser.add_argument(
-        "--prompt",
-        default=None,
-        help="Prompt text. If omitted, prompt is read from stdin.",
-    )
-    parser.add_argument(
-        "--llama-cli",
-        default="llama-cli",
-        help="Path to llama-cli (or llama-cli.exe) from llama.cpp, or name on PATH.",
-    )
-    parser.add_argument(
-        "--mmproj",
-        default=None,
-        help="Optional mmproj GGUF for vision models (only if using image/video prompts).",
-    )
-    parser.add_argument("--ctx", type=int, default=131072, help="Context length (-c).")
-    parser.add_argument("--temperature", type=float, default=0.6, help="Sampling temperature.")
-    parser.add_argument("--top-p", type=float, default=0.95, help="Top-p nucleus sampling.")
-    parser.add_argument("--top-k", type=int, default=20, help="Top-k sampling.")
-    parser.add_argument(
-        "--n-predict",
-        type=int,
-        default=512,
-        help="Max tokens to generate (-n).",
-    )
-    parser.add_argument(
-        "--n-gpu-layers",
-        type=int,
-        default=None,
-        help="GPU layers to offload (-ngl). Example: 99. Omit to let llama.cpp default.",
-    )
-
-    args = parser.parse_args()
-
-    if not args.prompt:
-        args.prompt = _read_prompt_from_stdin()
-
-    if not args.prompt:
-        print("Error: empty prompt. Provide --prompt or pipe text to stdin.", file=sys.stderr)
+    prompt = PROMPT.strip()
+    if not prompt:
+        print("Error: PROMPT is empty. Set PROMPT at the top of run_qwen35_gguf.py.", file=sys.stderr)
         return 2
 
-    model_path = Path(args.model)
-    if not model_path.exists():
-        print(f"Error: model file not found: {model_path}", file=sys.stderr)
+    if not MODEL_PATH.exists():
+        print(f"Error: model file not found: {MODEL_PATH}", file=sys.stderr)
         return 2
 
-    if args.mmproj and not Path(args.mmproj).exists():
-        print(f"Error: mmproj file not found: {args.mmproj}", file=sys.stderr)
+    if MMPROJ_PATH is not None and not Path(MMPROJ_PATH).exists():
+        print(f"Error: mmproj file not found: {MMPROJ_PATH}", file=sys.stderr)
         return 2
 
-    cmd = _build_cmd(args)
+    cmd = _build_cmd(prompt)
 
-    # Print the command so it's easy to reproduce/debug.
     printable = " ".join(shlex.quote(c) for c in cmd)
     print(f"[run] {printable}", file=sys.stderr)
 
     try:
-        proc = subprocess.run(cmd, check=False)
-        return proc.returncode
+        start = time.time()
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        latency = time.time() - start
+
+        output_text = proc.stdout.strip()
+
+        CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        new_file = not CSV_PATH.exists()
+        with CSV_PATH.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if new_file:
+                writer.writerow(["timestamp", "prompt", "output_text", "latency_seconds"])
+            writer.writerow(
+                [
+                    datetime.now().isoformat(timespec="seconds"),
+                    prompt,
+                    output_text,
+                    f"{latency:.3f}",
+                ]
+            )
+
+        print(output_text)
+        return 0
     except FileNotFoundError:
         print(
             "Error: llama-cli not found. Build/install llama.cpp and pass --llama-cli path to llama-cli(.exe).",
             file=sys.stderr,
         )
         return 127
+    except subprocess.CalledProcessError as e:
+        print("Error: llama-cli exited with non-zero status.", file=sys.stderr)
+        if e.stdout:
+            print(e.stdout, file=sys.stderr)
+        if e.stderr:
+            print(e.stderr, file=sys.stderr)
+        return e.returncode
 
 
 if __name__ == "__main__":
